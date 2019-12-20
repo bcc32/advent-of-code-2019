@@ -261,5 +261,5 @@ let b () =
 
 let%expect_test "b" =
   let%bind () = b () in
-  [%expect {| 72 |}]
+  [%expect {| 2260 |}]
 ;;
