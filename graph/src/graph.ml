@@ -93,3 +93,20 @@ let dijkstra
         | Some _ -> ())
     done)
 ;;
+
+(* let floyd_warshall edges =
+ *   assert (Array.length edges = Array.length edges.(0));
+ *   let n = Array.length edges in
+ *   let shortest_path = Array.make_matrix None ~dimx:n ~dimy:n in
+ *   (\* let dist be a |V| × |V| array of minimum distances initialized to ∞ (infinity)
+ *      for each edge (u, v) do
+ *      dist[u][v] ← w(u, v)  // The weight of the edge (u, v)
+ *      for each vertex v do
+ *      dist[v][v] ← 0
+ *      for k from 1 to |V|
+ *      for i from 1 to |V|
+ *      for j from 1 to |V|
+ *      if dist[i][j] > dist[i][k] + dist[k][j]
+ *      dist[i][j] ← dist[i][k] + dist[k][j]
+ *      end if *\)
+ * ;; *)

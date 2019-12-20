@@ -28,3 +28,7 @@ val dijkstra
   -> start:'node
   -> is_end:('node -> bool)
   -> ('node * int) option
+
+(* (\** Given a dense graph with weighted edges (and no negative cycles), calculate
+ *    the length of the shortest path between all pairs of points. *\)
+ * val floyd_warshall : int array array -> int option array array *)
