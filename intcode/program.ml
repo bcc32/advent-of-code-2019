@@ -2,8 +2,11 @@ open! Core
 open! Async
 open! Import
 
+(* Use 64-bit ints as memory. *)
+let sizeof_elt = 8
+
 type t =
-  { mutable memory : int array
+  { mutable memory : Bigstring.Hexdump.t
   ; mutable relative_base : int
   ; mutable pc : int
   ; input : int Queue.t
@@ -14,24 +17,27 @@ module Snapshot = struct
   type program = t
 
   type t =
-    { memory : int array
+    { memory : Bigstring.t
     ; relative_base : int
     ; pc : int
     }
   [@@deriving sexp_of]
 
   let instantiate { memory; relative_base; pc } : program =
-    { memory = Array.copy memory; relative_base; pc; input = Queue.create () }
+    { memory = Bigstring.copy memory; relative_base; pc; input = Queue.create () }
   ;;
 end
 
 let of_string source_code =
-  let memory =
+  let memory_array =
     source_code
     |> String.strip
     |> String.split ~on:','
     |> Array.of_list_map ~f:Int.of_string
   in
+  let memory = Bigstring.create (Array.length memory_array * sizeof_elt) in
+  Array.iteri memory_array ~f:(fun i x ->
+    Bigstring.unsafe_set_int64_le memory ~pos:(i * sizeof_elt) x);
   { memory; relative_base = 0; pc = 0; input = Queue.create () }
 ;;
 
@@ -39,36 +45,33 @@ let of_string source_code =
 let snapshot t : Snapshot.t =
   if not (Queue.is_empty t.input)
   then raise_s [%message "Program.copy: tried to copy a program with pending input"];
-  { memory = Array.copy t.memory; relative_base = t.relative_base; pc = t.pc }
+  { memory = Bigstring.copy t.memory; relative_base = t.relative_base; pc = t.pc }
 ;;
 
 let restore dst ~from:(src : Snapshot.t) =
   if not (Queue.is_empty dst.input)
   then raise_s [%message "Program.restore: tried to restore a program with pending input"];
-  let gap = Array.length dst.memory - Array.length src.memory in
+  let gap = Bigstring.length dst.memory - Bigstring.length src.memory in
   (match Int.sign gap with
-   | Neg -> dst.memory <- Array.copy src.memory
+   | Neg -> dst.memory <- Bigstring.copy src.memory
    | Zero | Pos ->
-     Array.Int.blit
+     Bigstring.unsafe_blit
        ~src:src.memory
        ~src_pos:0
        ~dst:dst.memory
        ~dst_pos:0
-       ~len:(Int.min (Array.length src.memory) (Array.length dst.memory));
-     if gap > 0
-     then
-       (* TODO: This might be able to use a C stub with memset to go *even faster*. *)
-       for pos = Array.length src.memory to Array.length dst.memory - 1 do
-         dst.memory.(pos) <- 0
-       done);
+       ~len:(Bigstring.length src.memory);
+     Bigstring.memset dst.memory ~pos:(Bigstring.length src.memory) ~len:gap '\x00');
   dst.pc <- src.pc;
   dst.relative_base <- src.relative_base
 ;;
 
 module Infix = struct
-  let ( .$() ) t i = t.memory.(i)
-  let ( .$()<- ) t i x = t.memory.(i) <- x
+  let ( .$() ) t pos = Bigstring.get_int64_le_exn t.memory ~pos:(pos * sizeof_elt)
+  let ( .$()<- ) t pos x = Bigstring.set_int64_le t.memory ~pos:(pos * sizeof_elt) x
 end
+
+open Infix
 
 module Insn = struct
   let[@inline always] opcode t = t mod 100
@@ -79,7 +82,7 @@ end
 
 let[@inline always] get t ~arg ~mode =
   let try_get index =
-    try t.memory.(index) with
+    try t.$(index) with
     | _ -> 0
   in
   match mode with
@@ -96,21 +99,22 @@ let[@cold] raise_set_invalid_addressing_mode ~mode =
 let set t ~arg ~mode ~value =
   let grow index =
     let new_array =
-      Array.create 0 ~len:(Int.max (index + 1) (Array.length t.memory * 2))
+      let len = Int.max ((index + 1) * sizeof_elt) (Bigstring.length t.memory * 2) in
+      Bigstring.create len
     in
-    Array.blit
+    Bigstring.blit
       ~src:t.memory
-      ~dst:new_array
       ~src_pos:0
+      ~dst:new_array
       ~dst_pos:0
-      ~len:(Array.length t.memory);
+      ~len:(Bigstring.length t.memory);
     t.memory <- new_array
   in
   let try_set index value =
-    try t.memory.(index) <- value with
+    try t.$(index) <- value with
     | _ ->
       grow index;
-      t.memory.(index) <- value
+      t.$(index) <- value
   in
   match mode with
   | 0 -> try_set arg value
@@ -131,18 +135,18 @@ module Sync = struct
     raise_s [%message "unrecognized opcode" (code : int) (t : t)]
   ;;
 
-  let rec step ({ memory; relative_base; pc; input } as t) : Step_result.t =
-    let insn = memory.(pc) in
+  let rec step ({ memory = _; relative_base; pc; input } as t) : Step_result.t =
+    let insn = t.$(pc) in
     let[@inline always] x () =
-      let arg = memory.(pc + 1) in
+      let arg = t.$(pc + 1) in
       get t ~arg ~mode:(Insn.mode1 insn)
     in
     let[@inline always] y () =
-      let arg = memory.(pc + 2) in
+      let arg = t.$(pc + 2) in
       get t ~arg ~mode:(Insn.mode2 insn)
     in
     let[@inline always] set_z value =
-      let arg = memory.(pc + 3) in
+      let arg = t.$(pc + 3) in
       set t ~arg ~mode:(Insn.mode3 insn) ~value
     in
     match Insn.opcode insn with
@@ -155,7 +159,7 @@ module Sync = struct
       t.pc <- pc + 4;
       step t
     | 3 ->
-      let arg1 = memory.(pc + 1) in
+      let arg1 = t.$(pc + 1) in
       (match Queue.dequeue input with
        | None -> Need_input
        | Some input ->
